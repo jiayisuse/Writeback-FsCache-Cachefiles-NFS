@@ -85,7 +85,7 @@ enum {
 	Opt_rdirplus, Opt_nordirplus,
 	Opt_sharecache, Opt_nosharecache,
 	Opt_resvport, Opt_noresvport,
-	Opt_fscache, Opt_nofscache,
+	Opt_fscache, Opt_wbfscache, Opt_nofscache,
 
 	/* Mount options that take integer arguments */
 	Opt_port,
@@ -147,6 +147,7 @@ static const match_table_t nfs_mount_option_tokens = {
 	{ Opt_resvport, "resvport" },
 	{ Opt_noresvport, "noresvport" },
 	{ Opt_fscache, "fsc" },
+	{ Opt_wbfscache, "wbfsc" },
 	{ Opt_nofscache, "nofsc" },
 
 	{ Opt_port, "port=%s" },
@@ -694,8 +695,12 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss,
 	else
 		nfs_show_nfsv4_options(m, nfss, showdefaults);
 
-	if (nfss->options & NFS_OPTION_FSCACHE)
+	if ((nfss->options & NFS_OPTION_FSCACHE) &&
+			!(nfss->options & NFS_OPTION_WBFSCACHE))
 		seq_printf(m, ",fsc");
+
+	if (nfss->options & NFS_OPTION_WBFSCACHE)
+		seq_printf(m, ",wbfsc");
 
 	if (nfss->flags & NFS_MOUNT_LOOKUP_CACHE_NONEG) {
 		if (nfss->flags & NFS_MOUNT_LOOKUP_CACHE_NONE)
@@ -859,8 +864,15 @@ static int nfs_show_stats(struct seq_file *m, struct dentry *root)
 	for (i = 0; i < __NFSIOS_BYTESMAX; i++)
 		seq_printf(m, "%Lu ", totals.bytes[i]);
 #ifdef CONFIG_NFS_FSCACHE
-	if (nfss->options & NFS_OPTION_FSCACHE) {
+	if ((nfss->options & NFS_OPTION_FSCACHE) &&
+			!(nfss->options & NFS_OPTION_WBFSCACHE)) {
 		seq_printf(m, "\n\tfsc:\t");
+		for (i = 0; i < __NFSIOS_FSCACHEMAX; i++)
+			seq_printf(m, "%Lu ", totals.bytes[i]);
+	}
+
+	if (nfss->options & NFS_OPTION_WBFSCACHE) {
+		seq_printf(m, "\n\twbfsc:\t");
 		for (i = 0; i < __NFSIOS_FSCACHEMAX; i++)
 			seq_printf(m, "%Lu ", totals.bytes[i]);
 	}
@@ -1211,8 +1223,15 @@ static int nfs_parse_mount_options(char *raw,
 			kfree(mnt->fscache_uniq);
 			mnt->fscache_uniq = NULL;
 			break;
+		case Opt_wbfscache:
+			mnt->options |= (NFS_OPTION_FSCACHE |
+					NFS_OPTION_WBFSCACHE);
+			kfree(mnt->fscache_uniq);
+			mnt->fscache_uniq = NULL;
+			break;
 		case Opt_nofscache:
-			mnt->options &= ~NFS_OPTION_FSCACHE;
+			mnt->options &= (~NFS_OPTION_FSCACHE &
+					~NFS_OPTION_WBFSCACHE);
 			kfree(mnt->fscache_uniq);
 			mnt->fscache_uniq = NULL;
 			break;
