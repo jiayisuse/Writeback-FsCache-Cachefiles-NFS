@@ -303,15 +303,16 @@ static inline void nfs_fscache_inode_unlock(struct inode *inode)
 
 /*
  * Decide if we should enable or disable local caching for this inode.
- * - For now, with NFS, only regular files that are open read-only will be able
- *   to use the cache.
+ * - For now, with NFS, only explicit wbfsc mount option or regular files
+ *   that are open read-only will be able to use the cache.
  * - May be invoked multiple times in parallel by parallel nfs_open() functions.
  */
 void nfs_fscache_set_inode_cookie(struct inode *inode, struct file *filp)
 {
 	if (NFS_FSCACHE(inode)) {
 		nfs_fscache_inode_lock(inode);
-		if ((filp->f_flags & O_ACCMODE) != O_RDONLY)
+		if (!(NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE) &&
+				(filp->f_flags & O_ACCMODE) != O_RDONLY)
 			nfs_fscache_disable_inode_cookie(inode);
 		else
 			nfs_fscache_enable_inode_cookie(inode);
