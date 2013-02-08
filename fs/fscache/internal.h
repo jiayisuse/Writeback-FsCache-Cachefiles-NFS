@@ -138,6 +138,15 @@ extern void fscache_proc_cleanup(void);
 #endif
 
 /*
+ * writeback.c
+ */
+extern void fscache_writeback_cleanup(void);
+extern void fscache_pagevec_get(struct fscache_wbpage ***fsc_pages,
+				unsigned int *n);
+#define INIT_WB_PAGES_PER_ROUND		16
+#define MAX_WB_PAGES_PER_ROUND		36
+
+/*
  * stats.c
  */
 #ifdef CONFIG_FSCACHE_STATS

@@ -37,7 +37,9 @@ void fscache_cookie_init_once(void *_cookie)
 	memset(cookie, 0, sizeof(*cookie));
 	spin_lock_init(&cookie->lock);
 	spin_lock_init(&cookie->stores_lock);
+	spin_lock_init(&cookie->dirty_lock);
 	INIT_HLIST_HEAD(&cookie->backing_objects);
+	INIT_LIST_HEAD(&cookie->wbi_list);
 }
 
 /*
@@ -102,11 +104,14 @@ struct fscache_cookie *__fscache_acquire_cookie(
 	cookie->def		= def;
 	cookie->parent		= parent;
 	cookie->netfs_data	= netfs_data;
+	cookie->wbc		= NULL;
+	cookie->wbi		= NULL;
 	cookie->flags		= 0;
 
 	/* radix tree insertion won't use the preallocation pool unless it's
 	 * told it may not wait */
 	INIT_RADIX_TREE(&cookie->stores, GFP_NOFS & ~__GFP_WAIT);
+	INIT_RADIX_TREE(&cookie->dirty_tree, GFP_NOFS & ~__GFP_WAIT);
 
 	switch (cookie->def->type) {
 	case FSCACHE_COOKIE_TYPE_INDEX:

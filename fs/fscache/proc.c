@@ -15,6 +15,8 @@
 #include <linux/seq_file.h>
 #include "internal.h"
 
+extern struct proc_dir_entry *writeback_proc_entry;
+
 /*
  * initialise the /proc/fs/fscache/ directory
  */
@@ -77,5 +79,8 @@ void fscache_proc_cleanup(void)
 #ifdef CONFIG_FSCACHE_STATS
 	remove_proc_entry("fs/fscache/stats", NULL);
 #endif
+	if (writeback_proc_entry)
+		remove_proc_entry("fs/fscache/writeback", NULL);
+
 	remove_proc_entry("fs/fscache", NULL);
 }

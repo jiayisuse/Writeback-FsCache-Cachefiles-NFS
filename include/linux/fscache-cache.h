@@ -289,12 +289,16 @@ struct fscache_cookie {
 	spinlock_t			stores_lock;	/* lock on page store tree */
 	spinlock_t			dirty_lock;	/* lock on drity page tree */
 	struct hlist_head		backing_objects; /* object(s) backing this file/index */
+	struct list_head		wbi_list;	/* writeback list */
+	struct fscache_wbi		*wbi;		/* writeback control information */
 	atomic_t			dirty_pages;	/* dirty pages of cookie */
+	struct work_struct		work;
 	const struct fscache_cookie_def	*def;		/* definition */
 	struct fscache_cookie		*parent;	/* parent of this entry */
 	void				*netfs_data;	/* back pointer to netfs */
 	struct radix_tree_root		stores;		/* pages to be stored on this cookie */
 	struct radix_tree_root		dirty_tree;	/* dirty page information to be stored on this cookie */
+	struct writeback_control	*wbc;		/* page writeback control information */
 #define FSCACHE_COOKIE_PENDING_TAG	0		/* pages tag: pending write to cache */
 #define FSCACHE_COOKIE_STORING_TAG	1		/* pages tag: writing to cache */
 #define FSCACHE_COOKIE_DIRTY_TAG	2		/* pages tag: dirty page to be writen back */

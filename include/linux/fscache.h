@@ -176,8 +176,24 @@ struct fscache_wbpage {
 	struct page		*wb_page;
 };
 
+typedef void (*do_writeback_t)(void *data, struct writeback_control *wbc);
 typedef int (*fscache_writepage_t)(struct fscache_wbpage *fsc_page,
 				   void *data);
+struct fscache_wbi {
+	spinlock_t			lock;
+	struct rw_semaphore		cookie_sem;
+	struct list_head		link;		/* internal link */
+	struct list_head		cookie_list;
+	atomic_t			dirty_pages;
+
+	unsigned long			last_active;
+	struct timer_list		wb_timer;
+
+	do_writeback_t			do_writeback;
+	struct task_struct		*task;
+	struct workqueue_struct		*wq;
+	struct fscache_cookie		*server;
+};
 
 /*
  * slow-path functions for when there is actually caching available, and the
@@ -215,6 +231,8 @@ extern int __fscache_write_page(struct fscache_cookie *,
 				struct page *,
 				int,
 				gfp_t);
+extern void __fscache_set_wbc(struct fscache_cookie *,
+			      struct writeback_control *);
 extern void __fscache_prepare_writeback(struct fscache_cookie *);
 extern int __fscache_writeback_pages(struct fscache_cookie *,
 				     fscache_writepage_t,
@@ -224,6 +242,11 @@ extern int __fscache_flush_back(struct fscache_cookie *,
 				void *);
 extern int __fscache_wbpage_release(struct page *);
 extern int __fscache_page_end_writeback(struct page *);
+extern int __fscache_wbi_init(struct fscache_wbi *, do_writeback_t, dev_t);
+extern int __fscache_wbi_register(struct fscache_wbi *, struct fscache_cookie *);
+extern void __fscache_wbi_unregister(struct fscache_wbi *);
+extern void __fscache_wbi_cookie_add(struct fscache_cookie *);
+extern void __fscache_wbi_cookie_del(struct fscache_cookie *);
 extern void __fscache_uncache_page(struct fscache_cookie *, struct page *);
 extern bool __fscache_check_page_write(struct fscache_cookie *, struct page *);
 extern void __fscache_wait_on_page_write(struct fscache_cookie *, struct page *);
@@ -591,14 +614,20 @@ int fscache_write_page(struct fscache_cookie *cookie,
 static inline
 int fscache_write_dirtypage(struct fscache_cookie *cookie,
 			    struct page *page,
+			    struct writeback_control *wbc,
 			    gfp_t gfp)
 {
-	if (fscache_cookie_valid(cookie))
-		return __fscache_write_page(cookie, page,
-					    FSCACHE_PAGE_DIRTY,
-					    gfp);
-	else
-		return -ENOBUFS;
+	int ret;
+
+	if (fscache_cookie_valid(cookie)) {
+		ret = __fscache_write_page(cookie, page,
+					   FSCACHE_PAGE_DIRTY,
+					   gfp);
+		__fscache_set_wbc(cookie, wbc);
+	} else
+		ret = -ENOBUFS;
+
+	return ret;
 }
 
 static inline
@@ -646,6 +675,47 @@ int fscache_page_end_writeback(struct page *page)
 		return __fscache_page_end_writeback(page);
 	else
 		return -1;
+}
+
+static inline
+int fscache_wbi_register(struct fscache_wbi *wbi, struct fscache_cookie *server)
+{
+	if (fscache_available())
+		return __fscache_wbi_register(wbi, server);
+	else
+		return 0;
+}
+
+static inline
+void fscache_wbi_unregister(struct fscache_wbi *wbi)
+{
+	if (fscache_available())
+		__fscache_wbi_unregister(wbi);
+}
+
+static inline
+void fscache_wbi_cookie_add(struct fscache_cookie *cookie)
+{
+	if (fscache_available())
+		__fscache_wbi_cookie_add(cookie);
+}
+
+static inline
+void fscache_wbi_cookie_del(struct fscache_cookie *cookie)
+{
+	if (fscache_available())
+		__fscache_wbi_cookie_del(cookie);
+}
+
+static inline
+int fscache_wbi_init(struct fscache_wbi *wbi,
+		     do_writeback_t do_writeback,
+		     dev_t dev)
+{
+	if (fscache_available())
+		return __fscache_wbi_init(wbi, do_writeback, dev);
+	else
+		return 0;
 }
 
 /**

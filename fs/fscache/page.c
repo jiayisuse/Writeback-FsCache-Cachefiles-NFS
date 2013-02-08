@@ -18,6 +18,8 @@
 #include <linux/freezer.h>
 #include "internal.h"
 
+extern atomic_t fscache_wb_interval;
+
 /*
  * check to see if a page is being written to the cache
  */
@@ -152,6 +154,7 @@ static void fscache_process_dirty_write_end(struct fscache_cookie *cookie,
 {
 	int err;
 	struct fscache_wbpage *wb_page;
+	int timeout = atomic_read(&fscache_wb_interval);
 
 	wb_page = fscache_alloc_fscpage(cookie, page);
 	if (!wb_page)
@@ -176,8 +179,15 @@ static void fscache_process_dirty_write_end(struct fscache_cookie *cookie,
 	radix_tree_tag_set(&cookie->dirty_tree, page->index,
 			   FSCACHE_COOKIE_DIRTY_TAG);
 	atomic_inc(&cookie->dirty_pages);
+	atomic_inc(&cookie->wbi->dirty_pages);
 	spin_unlock_bh(&cookie->dirty_lock);
 	radix_tree_preload_end();
+
+	spin_lock_bh(&cookie->wbi->lock);
+	if (!timer_pending(&cookie->wbi->wb_timer))
+		mod_timer(&cookie->wbi->wb_timer,
+			  jiffies + msecs_to_jiffies(5 * timeout));
+	spin_unlock_bh(&cookie->wbi->lock);
 
 	clear_bit(FSCACHE_COOKIE_NO_DATA_YET, &cookie->flags);
 nomem:
@@ -961,6 +971,13 @@ nomem:
 }
 EXPORT_SYMBOL(__fscache_write_page);
 
+inline void __fscache_set_wbc(struct fscache_cookie *cookie,
+		       struct writeback_control *wbc)
+{
+	cookie->wbc = wbc;
+}
+EXPORT_SYMBOL(__fscache_set_wbc);
+
 /*
  * Adjust backing store limit. Should be called before storing dirty
  * pages into fscache
@@ -1028,9 +1045,9 @@ int __fscache_writeback_pages(struct fscache_cookie *cookie,
 	int done;
 	struct page *page;
 	struct fscache_wbpage **fsc_pages, *xfsc_page;
-	unsigned nr;
+	unsigned vec_size, nr;
 
-	fsc_pages = kmalloc(16 * sizeof(struct fscache_wbpage *), GFP_KERNEL);
+	fscache_pagevec_get(&fsc_pages, &vec_size);
 	if (fsc_pages == NULL)
 		return -ENOMEM;
 
@@ -1043,7 +1060,7 @@ retry:
 	spin_lock(&cookie->dirty_lock);
 	nr = radix_tree_gang_lookup_tag(&cookie->dirty_tree,
 					(void **)fsc_pages,
-					0, 16,
+					0, (pgoff_t)vec_size,
 					FSCACHE_COOKIE_DIRTY_TAG);
 	spin_unlock(&cookie->dirty_lock);
 
@@ -1082,6 +1099,7 @@ retry:
 					page->index);
 			spin_unlock(&cookie->dirty_lock);
 			atomic_dec(&cookie->dirty_pages);
+			atomic_dec(&cookie->wbi->dirty_pages);
 			if (xfsc_page)
 				kfree(xfsc_page);
 		} else
@@ -1097,7 +1115,6 @@ nomem:
 	smp_mb__after_clear_bit();
 	wake_up_bit(&cookie->flags, FSCACHE_COOKIE_WRITTINGBACK);
 bit_error:
-	kfree(fsc_pages);
 	cond_resched();
 	return ret;
 }
