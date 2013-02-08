@@ -15,6 +15,7 @@
 #include <linux/buffer_head.h>
 #include <linux/pagevec.h>
 #include <linux/slab.h>
+#include <linux/freezer.h>
 #include "internal.h"
 
 /*
@@ -42,6 +43,17 @@ void __fscache_wait_on_page_write(struct fscache_cookie *cookie, struct page *pa
 	wait_event(*wq, !__fscache_check_page_write(cookie, page));
 }
 EXPORT_SYMBOL(__fscache_wait_on_page_write);
+
+/*
+ * helper function that is sleeping on bit locks
+ */
+static int fscache_wait_bit_killable(void *word)
+{
+	if (fatal_signal_pending(current))
+		return -ERESTARTSYS;
+	freezable_schedule();
+	return 0;
+}
 
 /*
  * decide whether a page can be released, possibly by cancelling a store to it
@@ -112,11 +124,75 @@ page_busy:
 }
 EXPORT_SYMBOL(__fscache_maybe_release_page);
 
+static struct fscache_wbpage *
+fscache_alloc_fscpage(struct fscache_cookie *cookie, struct page *page)
+{
+	uint64_t i_size;
+	unsigned int offset = page->index << PAGE_SHIFT;
+	struct fscache_wbpage *fsc_page = kmalloc(sizeof(struct fscache_wbpage),
+						  GFP_KERNEL);
+	if (!fsc_page)
+		return NULL;
+
+	cookie->def->get_attr(cookie->netfs_data, &i_size);
+	fsc_page->index = page->index;
+	fsc_page->mapping = page->mapping;
+	fsc_page->data = (void *)page_private(page);
+	fsc_page->start = 0;
+	if (i_size - offset < PAGE_SIZE)
+		fsc_page->size = i_size - offset;
+	else
+		fsc_page->size = PAGE_SIZE;
+
+	return fsc_page;
+}
+
+static void fscache_process_dirty_write_end(struct fscache_cookie *cookie,
+					    struct page *page)
+{
+	int err;
+	struct fscache_wbpage *wb_page;
+
+	wb_page = fscache_alloc_fscpage(cookie, page);
+	if (!wb_page)
+		goto nomem;
+
+	err = radix_tree_preload(GFP_KERNEL);
+	if (err)
+		goto free_out;
+
+	spin_lock_bh(&cookie->dirty_lock);
+	err = radix_tree_insert(&cookie->dirty_tree, page->index,
+				(void *)wb_page);
+	if (err) {
+		if (err == -EEXIST)
+			_debug("already exists %d", err);
+		else
+			_debug("insert failed %d", err);
+		spin_unlock_bh(&cookie->dirty_lock);
+		radix_tree_preload_end();
+		goto free_out;
+	}
+	radix_tree_tag_set(&cookie->dirty_tree, page->index,
+			   FSCACHE_COOKIE_DIRTY_TAG);
+	atomic_inc(&cookie->dirty_pages);
+	spin_unlock_bh(&cookie->dirty_lock);
+	radix_tree_preload_end();
+
+	clear_bit(FSCACHE_COOKIE_NO_DATA_YET, &cookie->flags);
+nomem:
+	return;
+free_out:
+	kfree(wb_page);
+	return;
+}
+
 /*
  * note that a page has finished being written to the cache
  */
 static void fscache_end_page_write(struct fscache_object *object,
-				   struct page *page)
+				   struct page *page,
+				   int dirty)
 {
 	struct fscache_cookie *cookie;
 	struct page *xpage = NULL;
@@ -124,6 +200,11 @@ static void fscache_end_page_write(struct fscache_object *object,
 	spin_lock(&object->lock);
 	cookie = object->cookie;
 	if (cookie) {
+		/* process dirty pages to prepare for the following
+		 * write-back */
+		if (dirty)
+			fscache_process_dirty_write_end(cookie, page);
+
 		/* delete the page from the tree if it is now no longer
 		 * pending */
 		spin_lock(&cookie->stores_lock);
@@ -657,6 +738,13 @@ static void fscache_write_op(struct fscache_operation *_op)
 
 	spin_lock(&object->lock);
 	cookie = object->cookie;
+	spin_unlock(&object->lock);
+	ret = wait_on_bit(&cookie->flags, FSCACHE_COOKIE_WRITTINGBACK,
+			  fscache_wait_bit_killable, TASK_KILLABLE);
+	if (ret)
+		return;
+
+	spin_lock(&object->lock);
 
 	if (!fscache_object_is_active(object) || !cookie) {
 		spin_unlock(&object->lock);
@@ -676,6 +764,7 @@ static void fscache_write_op(struct fscache_operation *_op)
 		goto superseded;
 	page = results[0];
 	_debug("gang %d [%lx]", n, page->index);
+
 	if (page->index > op->store_limit) {
 		fscache_stat(&fscache_n_store_pages_over_limit);
 		goto superseded;
@@ -693,7 +782,8 @@ static void fscache_write_op(struct fscache_operation *_op)
 	fscache_stat(&fscache_n_cop_write_page);
 	ret = object->cache->ops->write_page(op, page);
 	fscache_stat_d(&fscache_n_cop_write_page);
-	fscache_end_page_write(object, page);
+	fscache_end_page_write(object, page,
+			       test_bit(FSCACHE_OP_DIRTY, &_op->flags));
 	if (ret < 0) {
 		fscache_abort_object(object);
 	} else {
@@ -746,6 +836,7 @@ superseded:
  */
 int __fscache_write_page(struct fscache_cookie *cookie,
 			 struct page *page,
+			 int dirty,
 			 gfp_t gfp)
 {
 	struct fscache_storage *op;
@@ -766,6 +857,8 @@ int __fscache_write_page(struct fscache_cookie *cookie,
 	fscache_operation_init(&op->op, fscache_write_op,
 			       fscache_release_write_op);
 	op->op.flags = FSCACHE_OP_ASYNC | (1 << FSCACHE_OP_WAITING);
+	if (dirty)
+		set_bit(FSCACHE_OP_DIRTY, &op->op.flags);
 
 	ret = radix_tree_preload(gfp & ~__GFP_HIGHMEM);
 	if (ret < 0)
@@ -790,19 +883,23 @@ int __fscache_write_page(struct fscache_cookie *cookie,
 
 	ret = radix_tree_insert(&cookie->stores, page->index, page);
 	if (ret < 0) {
+		if (ret == -EEXIST && dirty)
+			goto continue_write;
 		if (ret == -EEXIST)
 			goto already_queued;
 		_debug("insert failed %d", ret);
 		goto nobufs_unlock_obj;
 	}
 
+continue_write:
 	radix_tree_tag_set(&cookie->stores, page->index,
 			   FSCACHE_COOKIE_PENDING_TAG);
 	page_cache_get(page);
 
 	/* we only want one writer at a time, but we do need to queue new
 	 * writers after exclusive ops */
-	if (test_and_set_bit(FSCACHE_OBJECT_PENDING_WRITE, &object->flags))
+	if (test_and_set_bit(FSCACHE_OBJECT_PENDING_WRITE, &object->flags) &&
+			!dirty)
 		goto already_pending;
 
 	spin_unlock(&cookie->stores_lock);
@@ -863,6 +960,198 @@ nomem:
 	return -ENOMEM;
 }
 EXPORT_SYMBOL(__fscache_write_page);
+
+/*
+ * Adjust backing store limit. Should be called before storing dirty
+ * pages into fscache
+ */
+void __fscache_prepare_writeback(struct fscache_cookie *cookie)
+{
+	uint64_t i_size;
+	struct fscache_object *object;
+
+	cookie->def->get_attr(cookie->netfs_data, &i_size);
+
+	spin_lock(&cookie->lock);
+	if (hlist_empty(&cookie->backing_objects)) {
+		spin_unlock(&cookie->lock);
+		return;
+	}
+	object = hlist_entry(cookie->backing_objects.first,
+			     struct fscache_object, cookie_link);
+	fscache_set_store_limit(object, i_size);
+	spin_unlock(&cookie->lock);
+}
+EXPORT_SYMBOL(__fscache_prepare_writeback);
+
+/*
+ * totally a void function to be used to call __fscache_read_or_alloc_page
+ */
+static void fscache_wb_read_complete(struct page *page, void *contex, int error)
+{
+	return;
+}
+
+/*
+ * allocate a new page to serve the write-back specifically
+ */
+static struct page *
+fscache_create_writeback_page(struct fscache_wbpage *fsc_page)
+{
+	struct page *page;
+	page = alloc_page(GFP_KERNEL | __GFP_HIGHMEM | __GFP_COLD);
+	if (unlikely(!page))
+		return NULL;
+
+	page->index = fsc_page->index;
+	page->mapping = fsc_page->mapping;
+	page->mapping->host = fsc_page->mapping->host;
+	fsc_page->wb_page = page;
+	ClearPagePrivate(page);
+	SetPageFsCache(page);
+	SetPageUptodate(page);
+	get_page(page);
+	lock_page(page);
+
+	return page;
+}
+
+/*
+ * write back dirty pages stored in cache
+ */
+int __fscache_writeback_pages(struct fscache_cookie *cookie,
+			      fscache_writepage_t writepage,
+			      void *data)
+{
+	int ret = 0;
+	int i;
+	int done;
+	struct page *page;
+	struct fscache_wbpage **fsc_pages, *xfsc_page;
+	unsigned nr;
+
+	fsc_pages = kmalloc(16 * sizeof(struct fscache_wbpage *), GFP_KERNEL);
+	if (fsc_pages == NULL)
+		return -ENOMEM;
+
+	ret = wait_on_bit_lock(&cookie->flags, FSCACHE_COOKIE_WRITTINGBACK,
+			       fscache_wait_bit_killable, TASK_KILLABLE);
+	if (ret)
+		goto bit_error;
+
+retry:
+	spin_lock(&cookie->dirty_lock);
+	nr = radix_tree_gang_lookup_tag(&cookie->dirty_tree,
+					(void **)fsc_pages,
+					0, 16,
+					FSCACHE_COOKIE_DIRTY_TAG);
+	spin_unlock(&cookie->dirty_lock);
+
+	done = 1;
+	for (i = 0; i < nr; i++) {
+		page = fscache_create_writeback_page(fsc_pages[i]);
+		if (page == NULL) {
+			ret = -ENOMEM;
+			goto nomem;
+		}
+
+		ret = __fscache_read_or_alloc_page(cookie, page,
+						   fscache_wb_read_complete,
+						   NULL, GFP_KERNEL);
+		switch (ret) {
+		case 0:
+			_debug("    readpage_from_fscache: BIO submitted\n");
+			break;
+		case -ENOBUFS:
+		case -ENODATA:
+			_debug("    readpage_from_fscache error %d\n", ret);
+			goto read_error;
+			break;
+		default:
+			goto read_error;
+			_debug("    readpage_from_fscache %d\n", ret);
+		}
+
+		ret = (*writepage)(fsc_pages[i], data);
+
+		if (!ret) {
+			spin_lock(&cookie->dirty_lock);
+			radix_tree_tag_clear(&cookie->dirty_tree, page->index,
+					FSCACHE_COOKIE_DIRTY_TAG);
+			xfsc_page = radix_tree_delete(&cookie->dirty_tree,
+					page->index);
+			spin_unlock(&cookie->dirty_lock);
+			atomic_dec(&cookie->dirty_pages);
+			if (xfsc_page)
+				kfree(xfsc_page);
+		} else
+			done = 0;
+read_error:
+		fscache_wbpage_release(page);
+	}
+	if (!done)
+		goto retry;
+
+nomem:
+	clear_bit_unlock(FSCACHE_COOKIE_WRITTINGBACK, &cookie->flags);
+	smp_mb__after_clear_bit();
+	wake_up_bit(&cookie->flags, FSCACHE_COOKIE_WRITTINGBACK);
+bit_error:
+	kfree(fsc_pages);
+	cond_resched();
+	return ret;
+}
+EXPORT_SYMBOL(__fscache_writeback_pages);
+
+/*
+ * flush all dirty pages stored in cache
+ */
+inline int __fscache_flush_back(struct fscache_cookie *cookie,
+				fscache_writepage_t writepage,
+				void *data)
+{
+	int ret = 0;
+
+	while (atomic_read(&cookie->dirty_pages)) {
+		ret = __fscache_writeback_pages(cookie, writepage, data);
+		if (ret)
+			break;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(__fscache_flush_back);
+
+/*
+ * Should be called when handling fscache writeback page, other than
+ * page_cache_release(). PageFsCache() should be checked before calling this.
+ */
+inline int __fscache_wbpage_release(struct page *page)
+{
+	if (page_count(page) != 1)
+		goto out;
+
+	ClearPageFsCache(page);
+	page->mapping = NULL;
+out:
+	put_page(page);
+
+	return 0;
+}
+EXPORT_SYMBOL(__fscache_wbpage_release);
+
+/*
+ * Should be called when handling fscache writeback page.
+ * PageFsCache() should be checked before calling this.
+ */
+inline int __fscache_page_end_writeback(struct page *page)
+{
+	if (!TestClearPageWriteback(page))
+		BUG();
+
+	return __fscache_wbpage_release(page);
+}
+EXPORT_SYMBOL(__fscache_page_end_writeback);
 
 /*
  * remove a page from the cache

@@ -88,6 +88,7 @@ struct fscache_operation {
 #define FSCACHE_OP_EXCLUSIVE	5	/* exclusive op, other ops must wait */
 #define FSCACHE_OP_DEAD		6	/* op is now dead */
 #define FSCACHE_OP_DEC_READ_CNT	7	/* decrement object->n_reads on destruction */
+#define FSCACHE_OP_DIRTY	8	/* operations for dirty page */
 #define FSCACHE_OP_KEEP_FLAGS	0xc0	/* flags to keep when repurposing an op */
 
 	atomic_t		usage;
@@ -286,13 +287,18 @@ struct fscache_cookie {
 	atomic_t			n_children;	/* number of children of this cookie */
 	spinlock_t			lock;
 	spinlock_t			stores_lock;	/* lock on page store tree */
+	spinlock_t			dirty_lock;	/* lock on drity page tree */
 	struct hlist_head		backing_objects; /* object(s) backing this file/index */
+	atomic_t			dirty_pages;	/* dirty pages of cookie */
 	const struct fscache_cookie_def	*def;		/* definition */
 	struct fscache_cookie		*parent;	/* parent of this entry */
 	void				*netfs_data;	/* back pointer to netfs */
 	struct radix_tree_root		stores;		/* pages to be stored on this cookie */
+	struct radix_tree_root		dirty_tree;	/* dirty page information to be stored on this cookie */
 #define FSCACHE_COOKIE_PENDING_TAG	0		/* pages tag: pending write to cache */
 #define FSCACHE_COOKIE_STORING_TAG	1		/* pages tag: writing to cache */
+#define FSCACHE_COOKIE_DIRTY_TAG	2		/* pages tag: dirty page to be writen back */
+#define FSCACHE_COOKIE_FLUSHING_TAG	3		/* pages tag: dirty page being writen back */
 
 	unsigned long			flags;
 #define FSCACHE_COOKIE_LOOKING_UP	0	/* T if non-index cookie being looked up still */
@@ -301,6 +307,7 @@ struct fscache_cookie {
 #define FSCACHE_COOKIE_PENDING_FILL	3	/* T if pending initial fill on object */
 #define FSCACHE_COOKIE_FILLING		4	/* T if filling object incrementally */
 #define FSCACHE_COOKIE_UNAVAILABLE	5	/* T if cookie is unavailable (error, etc) */
+#define FSCACHE_COOKIE_WRITTINGBACK	6	/* T if cookie is being written back */
 };
 
 extern struct fscache_cookie fscache_fsdef_index;

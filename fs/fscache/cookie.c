@@ -94,6 +94,7 @@ struct fscache_cookie *__fscache_acquire_cookie(
 
 	atomic_set(&cookie->usage, 1);
 	atomic_set(&cookie->n_children, 0);
+	atomic_set(&cookie->dirty_pages, 0);
 
 	atomic_inc(&parent->usage);
 	atomic_inc(&parent->n_children);
@@ -437,6 +438,12 @@ void __fscache_relinquish_cookie(struct fscache_cookie *cookie, int retire)
 	if (test_bit(FSCACHE_COOKIE_CREATING, &cookie->flags)) {
 		fscache_stat(&fscache_n_relinquishes_waitcrt);
 		wait_on_bit(&cookie->flags, FSCACHE_COOKIE_CREATING,
+			    fscache_wait_bit, TASK_UNINTERRUPTIBLE);
+	}
+
+	/* wait for the cookie to finish being written back(or to fail) */
+	if (test_bit(FSCACHE_COOKIE_WRITTINGBACK, &cookie->flags)) {
+		wait_on_bit(&cookie->flags, FSCACHE_COOKIE_WRITTINGBACK,
 			    fscache_wait_bit, TASK_UNINTERRUPTIBLE);
 	}
 

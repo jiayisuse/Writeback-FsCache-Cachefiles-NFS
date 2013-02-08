@@ -22,6 +22,7 @@
 #include <linux/list.h>
 #include <linux/pagemap.h>
 #include <linux/pagevec.h>
+#include <linux/writeback.h>
 
 #if defined(CONFIG_FSCACHE) || defined(CONFIG_FSCACHE_MODULE)
 #define fscache_available() (1)
@@ -166,6 +167,18 @@ struct fscache_netfs {
 	struct list_head		link;		/* internal link */
 };
 
+struct fscache_wbpage {
+	pgoff_t			index;
+	struct address_space	*mapping;
+	unsigned int		start;
+	unsigned int		size;
+	void			*data;
+	struct page		*wb_page;
+};
+
+typedef int (*fscache_writepage_t)(struct fscache_wbpage *fsc_page,
+				   void *data);
+
 /*
  * slow-path functions for when there is actually caching available, and the
  * netfs does actually have a valid token
@@ -198,7 +211,19 @@ extern int __fscache_read_or_alloc_pages(struct fscache_cookie *,
 					 void *,
 					 gfp_t);
 extern int __fscache_alloc_page(struct fscache_cookie *, struct page *, gfp_t);
-extern int __fscache_write_page(struct fscache_cookie *, struct page *, gfp_t);
+extern int __fscache_write_page(struct fscache_cookie *,
+				struct page *,
+				int,
+				gfp_t);
+extern void __fscache_prepare_writeback(struct fscache_cookie *);
+extern int __fscache_writeback_pages(struct fscache_cookie *,
+				     fscache_writepage_t,
+				     void *);
+extern int __fscache_flush_back(struct fscache_cookie *,
+				fscache_writepage_t,
+				void *);
+extern int __fscache_wbpage_release(struct page *);
+extern int __fscache_page_end_writeback(struct page *);
 extern void __fscache_uncache_page(struct fscache_cookie *, struct page *);
 extern bool __fscache_check_page_write(struct fscache_cookie *, struct page *);
 extern void __fscache_wait_on_page_write(struct fscache_cookie *, struct page *);
@@ -531,6 +556,9 @@ int fscache_alloc_page(struct fscache_cookie *cookie,
 		return -ENOBUFS;
 }
 
+#define FSCACHE_PAGE		0
+#define FSCACHE_PAGE_DIRTY	1
+
 /**
  * fscache_write_page - Request storage of a page in the cache
  * @cookie: The cookie representing the cache object
@@ -555,9 +583,69 @@ int fscache_write_page(struct fscache_cookie *cookie,
 		       gfp_t gfp)
 {
 	if (fscache_cookie_valid(cookie))
-		return __fscache_write_page(cookie, page, gfp);
+		return __fscache_write_page(cookie, page, FSCACHE_PAGE, gfp);
 	else
 		return -ENOBUFS;
+}
+
+static inline
+int fscache_write_dirtypage(struct fscache_cookie *cookie,
+			    struct page *page,
+			    gfp_t gfp)
+{
+	if (fscache_cookie_valid(cookie))
+		return __fscache_write_page(cookie, page,
+					    FSCACHE_PAGE_DIRTY,
+					    gfp);
+	else
+		return -ENOBUFS;
+}
+
+static inline
+void fscache_prepare_writeback(struct fscache_cookie *cookie)
+{
+	if (fscache_cookie_valid(cookie))
+		__fscache_prepare_writeback(cookie);
+}
+
+static inline
+int fscache_writeback_pages(struct fscache_cookie *cookie,
+			    fscache_writepage_t writepage,
+			    void *data)
+{
+	if (fscache_cookie_valid(cookie))
+		return __fscache_writeback_pages(cookie, writepage, data);
+	else
+		return -ENOBUFS;
+}
+
+static inline
+int fscache_flush_back(struct fscache_cookie *cookie,
+		       fscache_writepage_t writepage,
+		       void *data)
+{
+	if (fscache_cookie_valid(cookie))
+		return __fscache_flush_back(cookie, writepage, data);
+	else
+		return -ENOBUFS;
+}
+
+static inline
+int fscache_wbpage_release(struct page *page)
+{
+	if (page && PageFsCache(page))
+		return __fscache_wbpage_release(page);
+	else
+		return -1;
+}
+
+static inline
+int fscache_page_end_writeback(struct page *page)
+{
+	if (page && PageFsCache(page))
+		return __fscache_page_end_writeback(page);
+	else
+		return -1;
 }
 
 /**
