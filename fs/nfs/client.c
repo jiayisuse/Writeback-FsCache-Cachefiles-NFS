@@ -884,6 +884,14 @@ static int nfs_init_server(struct nfs_server *server,
 	if (error < 0)
 		goto error;
 
+	if (server->options & NFS_OPTION_WBFSCACHE) {
+		error = fscache_wbi_init(&server->fscache_wbi,
+					nfs_fscache_writepage,
+					server->s_dev);
+		if (error)
+			goto error;
+	}
+
 	/* Preserve the values of mount_server-related mount options */
 	if (data->mount_server.addrlen) {
 		memcpy(&server->mountd_address, &data->mount_server.address,
@@ -1571,6 +1579,14 @@ static int nfs4_init_server(struct nfs_server *server,
 			server->caps |= NFS_CAP_READDIRPLUS;
 	server->options = data->options;
 
+	if (server->options & NFS_OPTION_WBFSCACHE) {
+		error = fscache_wbi_init(&server->fscache_wbi,
+					nfs_fscache_writepage,
+					server->s_dev);
+		if (error)
+			goto error;
+	}
+
 	/* Get a client record */
 	error = nfs4_set_client(server,
 			data->nfs_server.hostname,
@@ -1751,6 +1767,14 @@ struct nfs_server *nfs_clone_server(struct nfs_server *source,
 	dprintk("Cloned FSID: %llx:%llx\n",
 		(unsigned long long) server->fsid.major,
 		(unsigned long long) server->fsid.minor);
+
+	if (server->options & NFS_OPTION_WBFSCACHE) {
+		error = fscache_wbi_init(&server->fscache_wbi,
+					nfs_fscache_writepage,
+					server->s_dev);
+		if (error)
+			goto out_free_server;
+	}
 
 	error = nfs_start_lockd(server);
 	if (error < 0)

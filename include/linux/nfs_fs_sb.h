@@ -6,6 +6,7 @@
 #include <linux/wait.h>
 #include <linux/nfs_xdr.h>
 #include <linux/sunrpc/xprt.h>
+#include <linux/fscache.h>
 
 #include <linux/atomic.h>
 
@@ -130,6 +131,7 @@ struct nfs_server {
 #ifdef CONFIG_NFS_FSCACHE
 	struct nfs_fscache_key	*fscache_key;	/* unique key for superblock */
 	struct fscache_cookie	*fscache;	/* superblock cookie */
+	struct fscache_wbi	fscache_wbi;	/* superblock fscache writeback info */
 #endif
 
 	u32			pnfs_blksize;	/* layout_blksize attr */

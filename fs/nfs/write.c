@@ -12,6 +12,7 @@
 #include <linux/pagemap.h>
 #include <linux/file.h>
 #include <linux/writeback.h>
+#include <linux/fscache-cache.h>
 #include <linux/swap.h>
 #include <linux/migrate.h>
 
@@ -445,6 +446,22 @@ static void nfs_fscacheio_on_complete(struct nfs_fscacheio_descriptor *desc)
 		nfs_clear_page_tag_locked(req);
 		nfs_end_page_writeback(page);
 	}
+}
+
+void nfs_fscache_writepage(void *data, struct writeback_control *wbc)
+{
+	struct nfs_inode *nfsi = data;
+	struct inode *inode = &nfsi->vfs_inode;
+	int how = wb_priority(wbc);
+	struct nfs_pageio_descriptor pgio;
+
+	nfs_pageio_init_write(&pgio, inode, how);
+	nfs_fscache_writepages_back(inode,
+			nfs_fscache_writepages_callback,
+			&pgio);
+	nfs_pageio_complete(&pgio);
+
+	return;
 }
 
 int nfs_writepages(struct address_space *mapping, struct writeback_control *wbc)

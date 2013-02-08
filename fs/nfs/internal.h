@@ -329,6 +329,7 @@ void nfs_retry_commit(struct list_head *page_list,
 void nfs_commit_clear_lock(struct nfs_inode *nfsi);
 void nfs_commitdata_release(void *data);
 void nfs_commit_release_pages(struct nfs_write_data *data);
+void nfs_fscache_writepage(void *data, struct writeback_control *wbc);
 
 #ifdef CONFIG_MIGRATION
 extern int nfs_migrate_page(struct address_space *,

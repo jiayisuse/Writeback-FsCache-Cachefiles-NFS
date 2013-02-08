@@ -18,6 +18,7 @@
 #include <linux/in6.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
+#include <linux/fscache-cache.h>
 
 #include "internal.h"
 #include "iostat.h"
@@ -174,6 +175,9 @@ void nfs_fscache_release_super_cookie(struct super_block *sb)
 	dfprintk(FSCACHE, "NFS: releasing superblock cookie (0x%p/0x%p)\n",
 		 nfss, nfss->fscache);
 
+	if (nfss->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_unregister(&nfss->fscache_wbi);
+
 	fscache_relinquish_cookie(nfss->fscache, 0);
 	nfss->fscache = NULL;
 
@@ -213,6 +217,9 @@ static void nfs_fscache_enable_inode_cookie(struct inode *inode)
 			&nfs_fscache_inode_object_def,
 			nfsi);
 
+		if ((NFS_SB(sb)->options & NFS_OPTION_WBFSCACHE))
+			fscache_wbi_cookie_add(nfsi->fscache);
+
 		dfprintk(FSCACHE, "NFS: get FH cookie (0x%p/0x%p/0x%p)\n",
 			 sb, nfsi, nfsi->fscache);
 	}
@@ -228,6 +235,9 @@ void nfs_fscache_release_inode_cookie(struct inode *inode)
 	dfprintk(FSCACHE, "NFS: clear cookie (0x%p/0x%p)\n",
 		 nfsi, nfsi->fscache);
 
+	if (NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_cookie_del(nfsi->fscache);
+
 	fscache_relinquish_cookie(nfsi->fscache, 0);
 	nfsi->fscache = NULL;
 }
@@ -241,6 +251,9 @@ void nfs_fscache_zap_inode_cookie(struct inode *inode)
 
 	dfprintk(FSCACHE, "NFS: zapping cookie (0x%p/0x%p)\n",
 		 nfsi, nfsi->fscache);
+
+	if (NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_cookie_del(nfsi->fscache);
 
 	fscache_relinquish_cookie(nfsi->fscache, 1);
 	nfsi->fscache = NULL;
@@ -332,6 +345,9 @@ void nfs_fscache_reset_inode_cookie(struct inode *inode)
 
 	nfs_fscache_inode_lock(inode);
 	if (nfsi->fscache) {
+		if (NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE)
+			fscache_wbi_cookie_del(nfsi->fscache);
+
 		/* retire the current fscache cache and get a new one */
 		fscache_relinquish_cookie(nfsi->fscache, 1);
 
@@ -339,6 +355,9 @@ void nfs_fscache_reset_inode_cookie(struct inode *inode)
 			nfss->nfs_client->fscache,
 			&nfs_fscache_inode_object_def,
 			nfsi);
+
+		if ((NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE))
+			fscache_wbi_cookie_add(nfsi->fscache);
 
 		dfprintk(FSCACHE,
 			 "NFS: revalidation new cookie (0x%p/0x%p/0x%p/0x%p)\n",
@@ -602,6 +621,13 @@ int __nfs_allocpage_from_fscache(struct inode *inode, struct page *page)
 void __nfs_fscache_prepare_write(struct inode *inode)
 {
 	fscache_prepare_writeback(NFS_I(inode)->fscache);
+}
+
+int __nfs_fscache_writepages_back(struct inode *inode,
+				  fscache_writepage_t writepage,
+				  void *data)
+{
+	return fscache_writeback_pages(NFS_I(inode)->fscache, writepage, data);
 }
 
 int __nfs_fscache_flush_back(struct inode *inode,

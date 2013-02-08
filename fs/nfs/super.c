@@ -2235,6 +2235,11 @@ static int nfs_bdi_register(struct nfs_server *server)
 	return bdi_register_dev(&server->backing_dev_info, server->s_dev);
 }
 
+static int nfs_fscache_wbi_register(struct nfs_server *server)
+{
+	return fscache_wbi_register(&server->fscache_wbi, server->fscache);
+}
+
 static struct dentry *nfs_fs_mount(struct file_system_type *fs_type,
 	int flags, const char *dev_name, void *raw_data)
 {
@@ -2305,6 +2310,13 @@ static struct dentry *nfs_fs_mount(struct file_system_type *fs_type,
 		/* initial superblock/root creation */
 		nfs_fill_super(s, data);
 		nfs_fscache_get_super_cookie(s, data->fscache_uniq, NULL);
+		if (server->options & NFS_OPTION_WBFSCACHE) {
+			error = nfs_fscache_wbi_register(server);
+			if (error) {
+				mntroot = ERR_PTR(error);
+				goto error_splat_fscwbi;
+			}
+		}
 	}
 
 	mntroot = nfs_get_root(s, mntfh, dev_name);
@@ -2330,6 +2342,9 @@ error_splat_root:
 	dput(mntroot);
 	mntroot = ERR_PTR(error);
 error_splat_super:
+	if (!s->s_root && server->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_unregister(&server->fscache_wbi);
+error_splat_fscwbi:
 	if (server && !s->s_root)
 		bdi_unregister(&server->backing_dev_info);
 error_splat_bdi:
@@ -2414,6 +2429,13 @@ nfs_xdev_mount(struct file_system_type *fs_type, int flags,
 		/* initial superblock/root creation */
 		nfs_clone_super(s, data->sb);
 		nfs_fscache_get_super_cookie(s, NULL, data);
+		if (server->options & NFS_OPTION_WBFSCACHE) {
+			error = nfs_fscache_wbi_register(server);
+			if (error) {
+				mntroot = ERR_PTR(error);
+				goto error_splat_fscwbi;
+			}
+		}
 	}
 
 	mntroot = nfs_get_root(s, data->fh, dev_name);
@@ -2442,6 +2464,9 @@ out_err_noserver:
 	return ERR_PTR(error);
 
 error_splat_super:
+	if (!s->s_root && server->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_unregister(&server->fscache_wbi);
+error_splat_fscwbi:
 	if (server && !s->s_root)
 		bdi_unregister(&server->backing_dev_info);
 error_splat_bdi:
@@ -2684,6 +2709,13 @@ nfs4_remote_mount(struct file_system_type *fs_type, int flags,
 		nfs4_fill_super(s);
 		nfs_fscache_get_super_cookie(
 			s, data ? data->fscache_uniq : NULL, NULL);
+		if (server->options & NFS_OPTION_WBFSCACHE) {
+			error = nfs_fscache_wbi_register(server);
+			if (error) {
+				mntroot = ERR_PTR(error);
+				goto error_splat_fscwbi;
+			}
+		}
 	}
 
 	mntroot = nfs4_get_root(s, mntfh, dev_name);
@@ -2712,6 +2744,9 @@ out_free:
 error_splat_root:
 	dput(mntroot);
 error_splat_super:
+	if (!s->s_root && server->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_unregister(&server->fscache_wbi);
+error_splat_fscwbi:
 	if (server && !s->s_root)
 		bdi_unregister(&server->backing_dev_info);
 error_splat_bdi:
@@ -2944,6 +2979,13 @@ nfs4_xdev_mount(struct file_system_type *fs_type, int flags,
 		/* initial superblock/root creation */
 		nfs4_clone_super(s, data->sb);
 		nfs_fscache_get_super_cookie(s, NULL, data);
+		if (server->options & NFS_OPTION_WBFSCACHE) {
+			error = nfs_fscache_wbi_register(server);
+			if (error) {
+				mntroot = ERR_PTR(error);
+				goto error_splat_fscwbi;
+			}
+		}
 	}
 
 	mntroot = nfs4_get_root(s, data->fh, dev_name);
@@ -2971,6 +3013,9 @@ out_err_noserver:
 	return ERR_PTR(error);
 
 error_splat_super:
+	if (!s->s_root && server->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_unregister(&server->fscache_wbi);
+error_splat_fscwbi:
 	if (server && !s->s_root)
 		bdi_unregister(&server->backing_dev_info);
 error_splat_bdi:
@@ -3035,6 +3080,13 @@ nfs4_remote_referral_mount(struct file_system_type *fs_type, int flags,
 		/* initial superblock/root creation */
 		nfs4_fill_super(s);
 		nfs_fscache_get_super_cookie(s, NULL, data);
+		if (server->options & NFS_OPTION_WBFSCACHE) {
+			error = nfs_fscache_wbi_register(server);
+			if (error) {
+				mntroot = ERR_PTR(error);
+				goto error_splat_fscwbi;
+			}
+		}
 	}
 
 	mntroot = nfs4_get_root(s, mntfh, dev_name);
@@ -3065,6 +3117,9 @@ out_err_nofh:
 	return ERR_PTR(error);
 
 error_splat_super:
+	if (!s->s_root && server->options & NFS_OPTION_WBFSCACHE)
+		fscache_wbi_unregister(&server->fscache_wbi);
+error_splat_fscwbi:
 	if (server && !s->s_root)
 		bdi_unregister(&server->backing_dev_info);
 error_splat_bdi:
