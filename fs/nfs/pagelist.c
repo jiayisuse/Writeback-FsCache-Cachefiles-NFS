@@ -19,9 +19,11 @@
 #include <linux/nfs_fs.h>
 #include <linux/nfs_mount.h>
 #include <linux/export.h>
+#include <linux/fscache.h>
 
 #include "internal.h"
 #include "pnfs.h"
+#include "fscache.h"
 
 static struct kmem_cache *nfs_page_cachep;
 
@@ -150,7 +152,10 @@ static void nfs_clear_request(struct nfs_page *req)
 	struct nfs_lock_context *l_ctx = req->wb_lock_context;
 
 	if (page != NULL) {
-		page_cache_release(page);
+		if (PageFsCache(page))
+			nfs_fscache_wbpage_release(page);
+		else
+			page_cache_release(page);
 		req->wb_page = NULL;
 	}
 	if (l_ctx != NULL) {

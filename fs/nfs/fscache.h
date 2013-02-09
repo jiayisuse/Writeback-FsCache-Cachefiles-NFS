@@ -57,6 +57,16 @@ struct nfs_fscache_key {
 };
 
 /*
+ * the track of fscache writen page
+ */
+struct nfs_fscacheio_descriptor {
+	struct list_head pg_list;
+	int pg_error;
+	int pg_count;
+	struct inode *pg_inode;
+};
+
+/*
  * fscache-index.c
  */
 extern struct fscache_netfs nfs_fscache_netfs;
@@ -93,6 +103,20 @@ extern int __nfs_readpages_from_fscache(struct nfs_open_context *,
 					struct inode *, struct address_space *,
 					struct list_head *, unsigned *);
 extern void __nfs_readpage_to_fscache(struct inode *, struct page *, int);
+extern void __nfs_writepage_to_fscache(struct inode *,
+				       struct page *,
+				       struct writeback_control *,
+				       int);
+
+extern int __nfs_allocpage_from_fscache(struct inode *, struct page *);
+extern void __nfs_fscache_prepare_write(struct inode *);
+
+extern int __nfs_fscache_flush_back(struct inode *,
+				    fscache_writepage_t,
+				    void *);
+
+extern int __nfs_fscache_wbpage_release(struct page *page);
+extern int __nfs_fscache_page_end_writeback(struct page *page);
 
 /*
  * wait for a page to complete writing to the cache
@@ -143,6 +167,17 @@ static inline int nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 }
 
 /*
+ * Find or alloc a set of pages from an inode data strorage object
+ */
+static inline int nfs_allocpage_from_fscache(struct inode *inode,
+					     struct page *page)
+{
+	if (NFS_I(inode)->fscache)
+		return __nfs_allocpage_from_fscache(inode, page);
+	return -ENOBUFS;
+}
+
+/*
  * Store a page newly fetched from the server in an inode data storage object
  * in the cache.
  */
@@ -155,6 +190,62 @@ static inline void nfs_readpage_to_fscache(struct inode *inode,
 }
 
 /*
+ * Store a page newly modified by user in an inode data storage object in cache
+ */
+static inline void nfs_writepage_to_fscache(struct inode *inode,
+					    struct page *page,
+					    struct writeback_control *wbc,
+					    int sync)
+{
+	if (PageFsCache(page))
+		__nfs_writepage_to_fscache(inode, page, wbc, sync);
+}
+
+static inline void nfs_fscache_prepare_write(struct inode *inode)
+{
+	__nfs_fscache_prepare_write(inode);
+}
+
+/*
+ * Store a page newly modified by user in an inode data storage object in cache
+ */
+static inline bool nfs_do_writepage_to_fscache(struct inode *inode,
+					       struct page *page,
+					       struct writeback_control *wbc,
+					       int sync)
+{
+	int ret;
+
+	ret = nfs_allocpage_from_fscache(inode, page);
+	if (ret < 0)
+		return ret;
+
+	nfs_writepage_to_fscache(inode, page, wbc, sync);
+
+	if (sync)
+		fscache_wait_on_page_write(NFS_I(inode)->fscache, page);
+
+	return 0;
+}
+
+static inline int nfs_fscache_flush_back(struct inode *inode,
+					 fscache_writepage_t writepage,
+					 void *pgio)
+{
+	return __nfs_fscache_flush_back(inode, writepage, pgio);
+}
+
+static inline int nfs_fscache_wbpage_release(struct page *page)
+{
+	return __nfs_fscache_wbpage_release(page);
+}
+
+static inline int nfs_fscache_page_end_writeback(struct page *page)
+{
+	return __nfs_fscache_page_end_writeback(page);
+}
+
+/*
  * indicate the client caching state as readable text
  */
 static inline const char *nfs_server_fscache_state(struct nfs_server *server)
@@ -162,6 +253,15 @@ static inline const char *nfs_server_fscache_state(struct nfs_server *server)
 	if (server->fscache && (server->options & NFS_OPTION_FSCACHE))
 		return "yes";
 	return "no ";
+}
+
+static inline void nfs_fscacheio_init(struct nfs_fscacheio_descriptor *desc,
+		struct inode *inode)
+{
+	INIT_LIST_HEAD(&desc->pg_list);
+	desc->pg_count = 0;
+	desc->pg_error = 0;
+	desc->pg_inode = inode;
 }
 
 
@@ -212,6 +312,30 @@ static inline int nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 }
 static inline void nfs_readpage_to_fscache(struct inode *inode,
 					   struct page *page, int sync) {}
+static inline void nfs_writepage_to_fscache(struct inode *inode,
+					    struct page *page, int sync) {}
+static inline int nfs_do_writepage_to_fscache(struct inode *inode,
+					      struct page *page, int sync) {}
+
+static inline int nfs_fscache_flush_back(struct inode *inode,
+					 struct writeback_control *wbc,
+					 writepage_t writepage,
+					 void *pgio)
+{
+	return 0;
+}
+
+static inline int nfs_fscache_wbpage_release(struct page *page)
+{
+	return 0;
+}
+
+static inline int nfs_fscache_page_end_writeback(struct page *page)
+{
+	return 0;
+}
+
+static inline void nfs_fscacheio_init(struct nfs_fscacheio_descriptor *desc) {}
 
 static inline const char *nfs_server_fscache_state(struct nfs_server *server)
 {

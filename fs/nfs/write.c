@@ -333,17 +333,126 @@ int nfs_writepage(struct page *page, struct writeback_control *wbc)
 static int nfs_writepages_callback(struct page *page, struct writeback_control *wbc, void *data)
 {
 	int ret;
+	struct inode *inode = page->mapping->host;
+
+	if (NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE) {
+		SetPageFsCache(page);
+		nfs_fscache_prepare_write(inode);
+		nfs_readpage_to_fscache(inode, page, 1);
+	}
+	ClearPageFsCache(page);
 
 	ret = nfs_do_writepage(page, wbc, data);
 	unlock_page(page);
 	return ret;
 }
 
+static struct nfs_page *nfs_setup_write_request(struct nfs_open_context *ctx,
+		struct page *page, unsigned int offset, unsigned int bytes);
+
+static int
+nfs_fscache_writepages_callback(struct fscache_wbpage *fsc_page, void *data)
+{
+	int ret = 0;
+	struct page *page = fsc_page->wb_page;
+	struct nfs_pageio_descriptor *pgio = data;
+	struct inode *inode = page->mapping->host;
+	struct nfs_open_context *ctx;
+	struct nfs_page *req;
+
+	nfs_inc_stats(inode, NFSIOS_VFSWRITEPAGE);
+	nfs_add_stats(inode, NFSIOS_WRITEPAGES, 1);
+
+	SetPageFsCache(page);
+	ctx = nfs_find_open_context(inode, NULL, FMODE_WRITE | FMODE_READ);
+	if (ctx == NULL) {
+		ctx = nfs_find_open_context(inode, NULL, FMODE_WRITE);
+		if (ctx == NULL) {
+			ret = -EBADF;
+			goto out;
+		}
+	}
+
+	req = nfs_setup_write_request(ctx, page, fsc_page->start,
+			fsc_page->size);
+	if (IS_ERR(req)) {
+		ret = PTR_ERR(req);
+		goto out_error;
+	}
+
+	nfs_pageio_cond_complete(pgio, page->index);
+	TestSetPageWriteback(page);
+	if (!nfs_pageio_add_request(pgio, req)) {
+		nfs_redirty_request(req);
+		ret = pgio->pg_error;
+	}
+
+	if (ret == -EAGAIN)
+		ret = 0;
+out_error:
+	put_nfs_open_context(ctx);
+out:
+	unlock_page(page);
+	return ret;
+}
+
+static int nfs_writefscache_callback(struct page *page, struct writeback_control *wbc, void *data)
+{
+	struct nfs_fscacheio_descriptor *desc = data;
+	struct inode *inode = page->mapping->host;
+	struct nfs_page *req = nfs_find_and_lock_request(page,
+			wbc->sync_mode == WB_SYNC_NONE);
+	int ret = -1;
+
+	if (!req)
+		goto err_out;
+	ret = PTR_ERR(req);
+	if (IS_ERR(req))
+		goto err_out;
+
+	nfs_set_page_writeback(page);
+
+	ret = nfs_do_writepage_to_fscache(inode, page, wbc, 0);
+	if (ret < 0)
+		nfs_redirty_request(req);
+	else {
+		list_add_tail(&req->wb_list, &desc->pg_list);
+		desc->pg_count++;
+	}
+
+err_out:
+	unlock_page(page);
+	desc->pg_error = ret;
+	return ret;
+}
+
+static inline bool nfs_fscache_first(struct inode *inode, int how)
+{
+	return NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE &&
+		!(how & FLUSH_HIGHPRI) &&
+		!test_bit(NFS_INO_FSYNCING, &NFS_I(inode)->flags);
+}
+
+static void nfs_inode_remove_request(struct nfs_page *req);
+static void nfs_fscacheio_on_complete(struct nfs_fscacheio_descriptor *desc)
+{
+	struct nfs_page *req, *tmp;
+	struct page *page;
+	list_for_each_entry_safe(req, tmp, &desc->pg_list, wb_list) {
+		page = req->wb_page;
+		nfs_list_remove_request(req);
+		nfs_inode_remove_request(req);
+		nfs_clear_page_tag_locked(req);
+		nfs_end_page_writeback(page);
+	}
+}
+
 int nfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
 	struct inode *inode = mapping->host;
 	unsigned long *bitlock = &NFS_I(inode)->flags;
-	struct nfs_pageio_descriptor pgio;
+	struct nfs_pageio_descriptor pgio, fscache_pgio;
+	int how = wb_priority(wbc);
 	int err;
 
 	/* Stop dirtying of new pages while we sync */
@@ -354,9 +463,32 @@ int nfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	nfs_inc_stats(inode, NFSIOS_VFSWRITEPAGES);
 
-	nfs_pageio_init_write(&pgio, inode, wb_priority(wbc));
-	err = write_cache_pages(mapping, wbc, nfs_writepages_callback, &pgio);
-	nfs_pageio_complete(&pgio);
+	if (nfs_fscache_first(inode, how)) {
+		struct nfs_fscacheio_descriptor fscio;
+
+		nfs_fscacheio_init(&fscio, inode);
+		pgio.pg_error = 0;
+		/* Update store limit of fscache no-index object */
+		nfs_fscache_prepare_write(inode);
+		err = write_cache_pages(mapping, wbc,
+				nfs_writefscache_callback,
+				&fscio);
+		nfs_fscacheio_on_complete(&fscio);
+		if (fscio.pg_error)
+			goto do_writepages;
+	} else {
+		nfs_pageio_init_write(&fscache_pgio, inode, how);
+		err = nfs_fscache_flush_back(inode,
+				nfs_fscache_writepages_callback,
+				&fscache_pgio);
+		nfs_pageio_complete(&fscache_pgio);
+do_writepages:
+		nfs_pageio_init_write(&pgio, inode, how);
+		err = write_cache_pages(mapping, wbc,
+				nfs_writepages_callback,
+				&pgio);
+		nfs_pageio_complete(&pgio);
+	}
 
 	clear_bit_unlock(NFS_INO_FLUSHING, bitlock);
 	smp_mb__after_clear_bit();
@@ -1200,7 +1332,10 @@ remove_request:
 		nfs_inode_remove_request(req);
 	next:
 		nfs_clear_page_tag_locked(req);
-		nfs_end_page_writeback(page);
+		if (PageFsCache(page))
+			nfs_fscache_page_end_writeback(page);
+		else
+			nfs_end_page_writeback(page);
 	}
 	nfs_writedata_release(calldata);
 }

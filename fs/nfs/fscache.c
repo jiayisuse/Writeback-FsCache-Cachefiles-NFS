@@ -508,7 +508,7 @@ int __nfs_readpages_from_fscache(struct nfs_open_context *ctx,
 }
 
 /*
- * Store a newly fetched page in fscache
+ * Store a newly fetched page from read() in fscache
  * - PG_fscache must be set on the page
  */
 void __nfs_readpage_to_fscache(struct inode *inode, struct page *page, int sync)
@@ -533,4 +533,95 @@ void __nfs_readpage_to_fscache(struct inode *inode, struct page *page, int sync)
 		nfs_add_fscache_stats(inode,
 				      NFSIOS_FSCACHE_PAGES_WRITTEN_OK, 1);
 	}
+}
+
+/*
+ * Store a newly fetched page from write() in fscache
+ * - PG_fscache must be set on the page
+ */
+void __nfs_writepage_to_fscache(struct inode *inode,
+				struct page *page,
+				struct writeback_control *wbc,
+				int sync)
+{
+	int ret;
+
+	dfprintk(FSCACHE,
+		 "NFS: writepage_to_fscache(fsc:%p/p:%p(i:%lx f:%lx)/%d)\n",
+		 NFS_I(inode)->fscache, page, page->index, page->flags, sync);
+
+	ret = fscache_write_dirtypage(NFS_I(inode)->fscache,
+				      page, wbc, GFP_KERNEL);
+	dfprintk(FSCACHE,
+		 "NFS:     writepage_to_fscache: p:%p(i:%lu f:%lx) ret %d\n",
+		 page, page->index, page->flags, ret);
+
+	if (ret != 0) {
+		fscache_uncache_page(NFS_I(inode)->fscache, page);
+		nfs_add_fscache_stats(inode,
+				      NFSIOS_FSCACHE_PAGES_WRITTEN_FAIL, 1);
+		nfs_add_fscache_stats(inode, NFSIOS_FSCACHE_PAGES_UNCACHED, 1);
+	} else {
+		nfs_add_fscache_stats(inode,
+				      NFSIOS_FSCACHE_PAGES_WRITTEN_OK, 1);
+	}
+}
+
+/*
+ * Find or alloc a page from fscache
+ */
+int __nfs_allocpage_from_fscache(struct inode *inode, struct page *page)
+{
+	int ret;
+
+	dfprintk(FSCACHE, "NFS: %s(0x%p/0x%p)\n", __func__,
+		 NFS_I(inode)->fscache, inode);
+
+	ret = fscache_alloc_page(NFS_I(inode)->fscache, page, GFP_KERNEL);
+
+	switch (ret) {
+	case 0: /* read submitted to the cache for all pages */
+		dfprintk(FSCACHE,
+			 "NFS: fscache alloc page submitted\n");
+		break;
+
+	case -ENOBUFS: /* some pages can't be cached */
+		dfprintk(FSCACHE,
+			 "NFS: nfs_allocpage_from_fscache: no : %d\n", ret);
+		break;
+
+	default:
+		dfprintk(FSCACHE,
+			 "NFS: nfs_allocpage_from_fscache: ret  %d\n", ret);
+		break;
+	}
+
+	return ret;
+}
+
+void __nfs_fscache_prepare_write(struct inode *inode)
+{
+	fscache_prepare_writeback(NFS_I(inode)->fscache);
+}
+
+int __nfs_fscache_flush_back(struct inode *inode,
+			     fscache_writepage_t writepage,
+			     void *data)
+{
+	struct fscache_cookie *cookie = NFS_I(inode)->fscache;
+
+	if (!cookie)
+		return -1;
+
+	return fscache_flush_back(cookie, writepage, data);
+}
+
+int __nfs_fscache_wbpage_release(struct page *page)
+{
+	return fscache_wbpage_release(page);
+}
+
+int __nfs_fscache_page_end_writeback(struct page *page)
+{
+	return fscache_page_end_writeback(page);
 }

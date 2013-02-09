@@ -271,6 +271,8 @@ nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 			dentry->d_parent->d_name.name, dentry->d_name.name,
 			datasync);
 
+	set_bit(NFS_INO_FSYNCING, &NFS_I(inode)->flags);
+
 	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
 	mutex_lock(&inode->i_mutex);
 
@@ -288,6 +290,9 @@ nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 		/* application has asked for meta-data sync */
 		ret = pnfs_layoutcommit_inode(inode, true);
 	mutex_unlock(&inode->i_mutex);
+
+	clear_bit(NFS_INO_FSYNCING, &NFS_I(inode)->flags);
+
 	return ret;
 }
 
