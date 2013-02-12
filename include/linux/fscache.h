@@ -237,6 +237,7 @@ extern void __fscache_prepare_writeback(struct fscache_cookie *);
 extern int __fscache_writeback_pages(struct fscache_cookie *,
 				     fscache_writepage_t,
 				     void *);
+extern int __fscache_writeback_update(struct fscache_cookie *);
 extern int __fscache_flush_back(struct fscache_cookie *,
 				fscache_writepage_t,
 				void *);
@@ -644,6 +645,15 @@ int fscache_writeback_pages(struct fscache_cookie *cookie,
 {
 	if (fscache_cookie_valid(cookie))
 		return __fscache_writeback_pages(cookie, writepage, data);
+	else
+		return -ENOBUFS;
+}
+
+static inline
+int fscache_writeback_update(struct fscache_cookie *cookie)
+{
+	if (fscache_cookie_valid(cookie))
+		return __fscache_writeback_update(cookie);
 	else
 		return -ENOBUFS;
 }

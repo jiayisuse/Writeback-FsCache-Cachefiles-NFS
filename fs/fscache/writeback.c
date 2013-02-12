@@ -494,6 +494,28 @@ void __fscache_wbi_cookie_del(struct fscache_cookie *cookie)
 }
 EXPORT_SYMBOL(__fscache_wbi_cookie_del);
 
+/*
+ * update fscache synchronously after writing-back finishes
+ */
+int __fscache_writeback_update(struct fscache_cookie *cookie)
+{
+	struct fscache_object *object;
+
+	spin_lock(&cookie->lock);
+	if (hlist_empty(&cookie->backing_objects)) {
+		spin_unlock(&cookie->lock);
+		return -ENOBUFS;
+	}
+	object = hlist_entry(cookie->backing_objects.first,
+			     struct fscache_object, cookie_link);
+	spin_unlock(&cookie->lock);
+
+	object->cache->ops->update_object(object);
+
+	return 0;
+}
+EXPORT_SYMBOL(__fscache_writeback_update);
+
 void fscache_writeback_cleanup(void)
 {
 	if (default_fscache_wbi.task) {
