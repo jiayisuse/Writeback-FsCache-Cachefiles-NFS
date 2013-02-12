@@ -111,6 +111,7 @@ extern void __nfs_writepage_to_fscache(struct inode *,
 extern int __nfs_allocpage_from_fscache(struct inode *, struct page *);
 extern void __nfs_fscache_prepare_write(struct inode *);
 
+extern int __nfs_fscache_writeback_update(struct inode *);
 extern int __nfs_fscache_flush_back(struct inode *,
 				    fscache_writepage_t,
 				    void *);
@@ -239,6 +240,11 @@ static inline int nfs_fscache_writepages_back(struct inode *inode,
 	return __nfs_fscache_writepages_back(inode, writepage, pgio);
 }
 
+static inline int nfs_fscache_writeback_update(struct inode *inode)
+{
+	return __nfs_fscache_writeback_update(inode);
+}
+
 static inline int nfs_fscache_flush_back(struct inode *inode,
 					 fscache_writepage_t writepage,
 					 void *pgio)
@@ -331,6 +337,11 @@ static inline int nfs_do_writepage_to_fscache(struct inode *inode,
 static inline int nfs_fscache_writepages_back(struct inode *inode,
 					      fscache_writepage_t writepage,
 					      void *pgio)
+{
+	return 0;
+}
+
+static inline int nfs_fscache_writeback_update(struct inode *inode)
 {
 	return 0;
 }

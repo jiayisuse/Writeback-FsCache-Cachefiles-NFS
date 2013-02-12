@@ -630,6 +630,11 @@ int __nfs_fscache_writepages_back(struct inode *inode,
 	return fscache_writeback_pages(NFS_I(inode)->fscache, writepage, data);
 }
 
+int __nfs_fscache_writeback_update(struct inode *inode)
+{
+	return fscache_writeback_update(NFS_I(inode)->fscache);
+}
+
 int __nfs_fscache_flush_back(struct inode *inode,
 			     fscache_writepage_t writepage,
 			     void *data)

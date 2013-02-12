@@ -1274,6 +1274,8 @@ static void nfs_writeback_release_partial(void *calldata)
 out:
 	if (atomic_dec_and_test(&req->wb_complete))
 		nfs_writepage_release(req, data);
+	if (NFS_SERVER(data->inode)->options & NFS_OPTION_WBFSCACHE)
+		nfs_fscache_writeback_update(data->inode);
 	nfs_writedata_release(calldata);
 }
 
@@ -1354,6 +1356,8 @@ remove_request:
 		else
 			nfs_end_page_writeback(page);
 	}
+	if (NFS_SERVER(data->inode)->options & NFS_OPTION_WBFSCACHE)
+		nfs_fscache_writeback_update(data->inode);
 	nfs_writedata_release(calldata);
 }
 
