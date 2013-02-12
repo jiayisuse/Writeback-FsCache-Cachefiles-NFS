@@ -344,7 +344,7 @@ void nfs_fscache_reset_inode_cookie(struct inode *inode)
 	struct fscache_cookie *old = nfsi->fscache;
 
 	nfs_fscache_inode_lock(inode);
-	if (nfsi->fscache) {
+	if (!fscache_check_consistency(nfsi->fscache)) {
 		if (NFS_SERVER(inode)->options & NFS_OPTION_WBFSCACHE)
 			fscache_wbi_cookie_del(nfsi->fscache);
 
