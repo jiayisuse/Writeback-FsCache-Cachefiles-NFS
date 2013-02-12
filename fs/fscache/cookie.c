@@ -499,6 +499,28 @@ void __fscache_relinquish_cookie(struct fscache_cookie *cookie, int retire)
 EXPORT_SYMBOL(__fscache_relinquish_cookie);
 
 /*
+ * check the consistency between the netfs inode and the backing cache
+ *
+ * NOTE: it only serves no-index type
+ */
+bool __fscache_check_consistency(struct fscache_cookie *cookie)
+{
+	struct fscache_object *object;
+
+	if (cookie->def->type != FSCACHE_COOKIE_TYPE_DATAFILE)
+		return false;
+
+	if (hlist_empty(&cookie->backing_objects))
+		return false;
+
+	object = hlist_entry(cookie->backing_objects.first,
+			struct fscache_object, cookie_link);
+
+	return object->cache->ops->check_consistency(object);
+}
+EXPORT_SYMBOL(__fscache_check_consistency);
+
+/*
  * destroy a cookie
  */
 void __fscache_cookie_put(struct fscache_cookie *cookie)

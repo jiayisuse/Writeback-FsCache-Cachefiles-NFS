@@ -213,6 +213,7 @@ extern struct fscache_cookie *__fscache_acquire_cookie(
 	void *);
 extern void __fscache_relinquish_cookie(struct fscache_cookie *, int);
 extern void __fscache_update_cookie(struct fscache_cookie *);
+extern bool __fscache_check_consistency(struct fscache_cookie *);
 extern int __fscache_attr_changed(struct fscache_cookie *);
 extern int __fscache_read_or_alloc_page(struct fscache_cookie *,
 					struct page *,
@@ -370,6 +371,22 @@ void fscache_relinquish_cookie(struct fscache_cookie *cookie, int retire)
 {
 	if (fscache_cookie_valid(cookie))
 		__fscache_relinquish_cookie(cookie, retire);
+}
+
+/**
+ * fscache_check_consistency - Request that if the cache is updated
+ * @cookie: The cookie representing the cache object
+ *
+ * Request an consistency check from fscache, which resorts to backing
+ * cache.
+ */
+static inline
+bool fscache_check_consistency(struct fscache_cookie *cookie)
+{
+	if (fscache_cookie_valid(cookie))
+		return __fscache_check_consistency(cookie);
+	else
+		return false;
 }
 
 /**

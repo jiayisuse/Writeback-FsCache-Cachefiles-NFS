@@ -273,6 +273,10 @@ struct fscache_cache_ops {
 
 	/* dissociate a cache from all the pages it was backing */
 	void (*dissociate_pages)(struct fscache_cache *cache);
+
+	/* check the consistency between the backing cache and the FS-Cache
+	 * cookie */
+	bool (*check_consistency)(struct fscache_object *object);
 };
 
 /*
